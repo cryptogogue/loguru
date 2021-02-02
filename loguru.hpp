@@ -1973,7 +1973,9 @@ namespace loguru
 		LOG_F(INFO, "stderr verbosity: %d", g_stderr_verbosity);
 		LOG_F(INFO, "-----------------------------------");
 
-		install_signal_handlers();
+        #if LOGURU_INSTALL_SIGNAL_HANDLERS
+            install_signal_handlers();
+        #endif
 
 		atexit(on_atexit);
 	}
