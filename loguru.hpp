@@ -411,7 +411,8 @@ namespace loguru
 		const char* filename;    // Already part of preamble
 		unsigned    line;        // Already part of preamble
 		const char* preamble;    // Date, time, uptime, thread, file:line, verbosity.
-		const char* indentation; // Just a bunch of spacing.
+        const char* filter;      // After the preamble, before the message.
+        const char* indentation; // Just a bunch of spacing.
 		const char* prefix;      // Assertion failure info goes here (or "").
 		const char* message;     // User message goes here.
 	};
@@ -570,7 +571,7 @@ namespace loguru
 #if LOGURU_USE_FMTLIB
 	// Actual logging function. Use the LOG macro instead of calling this directly.
 	LOGURU_EXPORT
-	void log(Verbosity verbosity, const char* file, unsigned line, LOGURU_FORMAT_STRING_TYPE format, fmt::ArgList args);
+	void log(Verbosity verbosity, const char* file, unsigned line, const char* filter, LOGURU_FORMAT_STRING_TYPE format, fmt::ArgList args);
 	FMT_VARIADIC(void, log, Verbosity, const char*, unsigned, LOGURU_FORMAT_STRING_TYPE)
 
 	// Log without any preamble or indentation.
@@ -580,7 +581,7 @@ namespace loguru
 #else // LOGURU_USE_FMTLIB?
 	// Actual logging function. Use the LOG macro instead of calling this directly.
 	LOGURU_EXPORT
-	void log(Verbosity verbosity, const char* file, unsigned line, LOGURU_FORMAT_STRING_TYPE format, ...) LOGURU_PRINTF_LIKE(4, 5);
+	void log(Verbosity verbosity, const char* file, unsigned line, const char* filter, LOGURU_FORMAT_STRING_TYPE format, ...) LOGURU_PRINTF_LIKE(5, 6);
 
 	// Log without any preamble or indentation.
 	LOGURU_EXPORT
@@ -592,7 +593,7 @@ namespace loguru
 	{
 	public:
 		LogScopeRAII() : _file(nullptr) {} // No logging
-		LogScopeRAII(Verbosity verbosity, const char* file, unsigned line, LOGURU_FORMAT_STRING_TYPE format, ...) LOGURU_PRINTF_LIKE(5, 6);
+		LogScopeRAII(Verbosity verbosity, const char* file, unsigned line, const char* filter, LOGURU_FORMAT_STRING_TYPE format, ...) LOGURU_PRINTF_LIKE(6, 7);
 		~LogScopeRAII();
 
 #if defined(_MSC_VER) && _MSC_VER > 1800
@@ -624,6 +625,7 @@ namespace loguru
 		Verbosity   _verbosity;
 		const char* _file; // Set to null if we are disabled due to verbosity
 		unsigned    _line;
+        const char* _filter;
 		bool        _indent_stderr; // Did we?
 		long long   _start_time_ns;
 		char        _name[LOGURU_SCOPE_TEXT_SIZE];
@@ -963,7 +965,7 @@ namespace loguru
 // LOG_F(2, "Only logged if verbosity is 2 or higher: %d", some_number);
 #define VLOG_F(verbosity, ...)                                                                     \
 	((verbosity) > loguru::current_verbosity_cutoff()) ? (void)0                                   \
-									  : loguru::log(verbosity, __FILE__, __LINE__, __VA_ARGS__)
+									  : loguru::log(verbosity, __FILE__, __LINE__, "", __VA_ARGS__)
 
 // LOG_F(INFO, "Foo: %d", some_number);
 #define LOG_F(verbosity_name, ...) VLOG_F(loguru::Verbosity_ ## verbosity_name, __VA_ARGS__)
@@ -971,7 +973,7 @@ namespace loguru
 #define VLOG_IF_F(verbosity, cond, ...)                                                            \
 	((verbosity) > loguru::current_verbosity_cutoff() || (cond) == false)                          \
 		? (void)0                                                                                  \
-		: loguru::log(verbosity, __FILE__, __LINE__, __VA_ARGS__)
+		: loguru::log(verbosity, __FILE__, __LINE__, "", __VA_ARGS__)
 
 #define LOG_IF_F(verbosity_name, cond, ...)                                                        \
 	VLOG_IF_F(loguru::Verbosity_ ## verbosity_name, cond, __VA_ARGS__)
@@ -979,7 +981,7 @@ namespace loguru
 #define VLOG_SCOPE_F(verbosity, ...)                                                               \
 	loguru::LogScopeRAII LOGURU_ANONYMOUS_VARIABLE(error_context_RAII_) =                          \
 	((verbosity) > loguru::current_verbosity_cutoff()) ? loguru::LogScopeRAII() :                  \
-	loguru::LogScopeRAII(verbosity, __FILE__, __LINE__, __VA_ARGS__)
+	loguru::LogScopeRAII(verbosity, __FILE__, __LINE__, "", __VA_ARGS__)
 
 // Raw logging - no preamble, no indentation. Slightly faster than full logging.
 #define RAW_VLOG_F(verbosity, ...)                                                                 \
@@ -2547,10 +2549,11 @@ namespace loguru
 		if (verbosity <= g_stderr_verbosity) {
 			if (g_colorlogtostderr && s_terminal_has_color) {
 				if (verbosity > Verbosity_WARNING) {
-					fprintf(stderr, "%s%s%s%s%s%s%s%s%s\n",
+					fprintf(stderr, "%s%s%s%s%s%s%s%s%s%s\n",
 						terminal_reset(),
 						terminal_dim(),
 						message.preamble,
+                        message.filter,
 						message.indentation,
 						terminal_reset(),
 						verbosity == Verbosity_INFO ? terminal_bold() : terminal_light_gray(),
@@ -2558,19 +2561,20 @@ namespace loguru
 						message.message,
 						terminal_reset());
 				} else {
-					fprintf(stderr, "%s%s%s%s%s%s%s%s\n",
+					fprintf(stderr, "%s%s%s%s%s%s%s%s%s\n",
 						terminal_reset(),
 						terminal_bold(),
 						verbosity == Verbosity_WARNING ? terminal_red() : terminal_light_red(),
 						message.preamble,
+                        message.filter,
 						message.indentation,
 						message.prefix,
 						message.message,
 						terminal_reset());
 				}
 			} else {
-				fprintf(stderr, "%s%s%s%s\n",
-					message.preamble, message.indentation, message.prefix, message.message);
+				fprintf(stderr, "%s%s%s%s%s\n",
+					message.preamble, message.filter, message.indentation, message.prefix, message.message);
 			}
 
 			if (g_flush_interval_ms == 0) {
@@ -2626,35 +2630,37 @@ namespace loguru
 	// stack_trace_skip is just if verbosity == FATAL.
 	void log_to_everywhere(int stack_trace_skip, Verbosity verbosity,
 	                       const char* file, unsigned line,
+                           const char* filter,
 	                       const char* prefix, const char* buff)
 	{
+        filter = filter ? filter : "";
 		char preamble_buff[LOGURU_PREAMBLE_WIDTH];
 		print_preamble(preamble_buff, sizeof(preamble_buff), verbosity, file, line);
-		auto message = Message{verbosity, file, line, preamble_buff, "", prefix, buff};
+		auto message = Message{verbosity, file, line, preamble_buff, filter, "", prefix, buff};
 		log_message(stack_trace_skip + 1, message, true, true);
 	}
 
 #if LOGURU_USE_FMTLIB
-	void log(Verbosity verbosity, const char* file, unsigned line, const char* format, fmt::ArgList args)
+	void log(Verbosity verbosity, const char* file, unsigned line, const char* filter, const char* format, fmt::ArgList args)
 	{
 		auto formatted = fmt::format(format, args);
-		log_to_everywhere(1, verbosity, file, line, "", formatted.c_str());
+		log_to_everywhere(1, verbosity, file, line, filter, "", formatted.c_str());
 	}
 
 	void raw_log(Verbosity verbosity, const char* file, unsigned line, const char* format, fmt::ArgList args)
 	{
 		auto formatted = fmt::format(format, args);
-		auto message = Message{verbosity, file, line, "", "", "", formatted.c_str()};
+		auto message = Message{verbosity, file, line, "", "", "", "", formatted.c_str()};
 		log_message(1, message, false, true);
 	}
 
 #else
-	void log(Verbosity verbosity, const char* file, unsigned line, const char* format, ...)
+	void log(Verbosity verbosity, const char* file, unsigned line, const char* filter, const char* format, ...)
 	{
 		va_list vlist;
 		va_start(vlist, format);
 		auto buff = vtextprintf(format, vlist);
-		log_to_everywhere(1, verbosity, file, line, "", buff.c_str());
+		log_to_everywhere(1, verbosity, file, line, filter, "", buff.c_str());
 		va_end(vlist);
 	}
 
@@ -2663,7 +2669,7 @@ namespace loguru
 		va_list vlist;
 		va_start(vlist, format);
 		auto buff = vtextprintf(format, vlist);
-		auto message = Message{verbosity, file, line, "", "", "", buff.c_str()};
+		auto message = Message{verbosity, file, line, "", "", "", "", buff.c_str()};
 		log_message(1, message, false, true);
 		va_end(vlist);
 	}
@@ -2682,9 +2688,11 @@ namespace loguru
 		s_needs_flushing = false;
 	}
 
-	LogScopeRAII::LogScopeRAII(Verbosity verbosity, const char* file, unsigned line, const char* format, ...)
+	LogScopeRAII::LogScopeRAII(Verbosity verbosity, const char* file, unsigned line, const char* filter, const char* format, ...)
 		: _verbosity(verbosity), _file(file), _line(line)
 	{
+        _filter = filter;
+        
 		if (verbosity <= current_verbosity_cutoff()) {
 			std::lock_guard<std::recursive_mutex> lock(s_mutex);
 			_indent_stderr = (verbosity <= g_stderr_verbosity);
@@ -2692,7 +2700,7 @@ namespace loguru
 			va_list vlist;
 			va_start(vlist, format);
 			vsnprintf(_name, sizeof(_name), format, vlist);
-			log_to_everywhere(1, _verbosity, file, line, "{ ", _name);
+			log_to_everywhere(1, _verbosity, file, line, _filter, "{ ", _name);
 			va_end(vlist);
 
 			if (_indent_stderr) {
@@ -2728,9 +2736,9 @@ namespace loguru
 #if LOGURU_VERBOSE_SCOPE_ENDINGS
 			auto duration_sec = (now_ns() - _start_time_ns) / 1e9;
 			auto buff = textprintf("%.*f s: %s", LOGURU_SCOPE_TIME_PRECISION, duration_sec, _name);
-			log_to_everywhere(1, _verbosity, _file, _line, "} ", buff.c_str());
+			log_to_everywhere(1, _verbosity, _file, _line, _filter, "} ", buff.c_str());
 #else
-            log_to_everywhere(1, _verbosity, _file, _line, "}", "");
+            log_to_everywhere(1, _verbosity, _file, _line, _filter, "}", "");
 #endif
 		}
 	}
@@ -2740,7 +2748,7 @@ namespace loguru
 		va_list vlist;
 		va_start(vlist, format);
 		auto buff = vtextprintf(format, vlist);
-		log_to_everywhere(stack_trace_skip + 1, Verbosity_FATAL, file, line, expr, buff.c_str());
+		log_to_everywhere(stack_trace_skip + 1, Verbosity_FATAL, file, line, "", expr, buff.c_str());
 		va_end(vlist);
 		abort(); // log_to_everywhere already does this, but this makes the analyzer happy.
 	}
@@ -3079,7 +3087,7 @@ namespace loguru
 		flush();
 		char preamble_buff[LOGURU_PREAMBLE_WIDTH];
 		print_preamble(preamble_buff, sizeof(preamble_buff), Verbosity_FATAL, "", 0);
-		auto message = Message{Verbosity_FATAL, "", 0, preamble_buff, "", "Signal: ", signal_name};
+		auto message = Message{Verbosity_FATAL, "", 0, preamble_buff, "", "", "Signal: ", signal_name};
 		try {
 			log_message(1, message, false, false);
 		} catch (...) {
