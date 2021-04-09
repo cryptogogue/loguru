@@ -230,7 +230,7 @@ Website: www.ilikebigbits.com
 #endif
 
 #ifndef LOGURU_REDEFINE_ASSERT
-	#define LOGURU_REDEFINE_ASSERT 0
+	#define LOGURU_REDEFINE_ASSERT 1
 #endif
 
 #ifndef LOGURU_WITH_STREAMS
@@ -1097,7 +1097,7 @@ namespace loguru
 #endif // NDEBUG
 
 
-#ifdef LOGURU_REDEFINE_ASSERT
+#if LOGURU_REDEFINE_ASSERT
 	#undef assert
 	#ifndef NDEBUG
 		// Debug:
